@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>발표 영상 분석기 (FastAPI)</title>
+    <title>발표 영상 AI 분석기</title>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <style>
         :root { --bg:#f6f8fa; --card:#fff; --mono:ui-monospace, SFMono-Regular, Menlo, monospace; --bar:#e5e7eb; --fill:#3b82f6; }
@@ -111,6 +111,43 @@
             background-color: #2ecc71;
             margin-top: 10px;
         }
+        .input-group {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        .input-group input[type="text"] {
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        /* 도넛 차트 스타일 */
+        #donut-chart-container {
+            position: relative;
+            margin: 20px 0;
+        }
+        #donut-overlay-text {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            font-weight: bold;
+            font-size: 1.2em;
+            cursor: pointer;
+        }
+        #detail-display-container {
+            background-color: #fdfdfd; 
+            border: 1px solid #eee;
+            border-radius: 5px;
+            padding: 20px; /* 상세 피드백 영역 패딩 추가 */
+        }
+        /* AI 보고서 텍스트 영역 (도넛 차트가 보일 때는 숨김) */
+        #ai-report-placeholder {
+            display: none; /* 시작 시 숨김 */
+        }
+        
     </style>
 </head>
 <body>
@@ -122,8 +159,16 @@
         <form id="uploadForm">
             <input type="file" id="videoFile" name="videoFile" accept="video/*" required>
 
+            <div class="card" style="margin-top: 0; box-shadow: none; border: 1px solid #e0e0e0; padding-bottom: 15px;">
+                <h4>2. 📝 평가 정보 입력 (필수)</h4>
+                <div class="input-group">
+                    <input type="text" id="competitionName" name="competitionName" placeholder="대회/수업명을 입력해주세요 (예: 2025 AI 경진대회)" required>
+                    <input type="text" id="teamName" name="teamName" placeholder="팀명 또는 발표자 이름을 입력해주세요 (예: 4조)" required>
+                </div>
+            </div>
+
             <div class="card" style="margin-top: 0; box-shadow: none; border: 1px solid #e0e0e0;">
-                <h4>2. 📊 AI 채점 기준 설정 (1개 ~ 최대 5개)</h4>
+                <h4>3. 📊 AI 채점 기준 설정 (1개 ~ 최대 5개)</h4>
                 <div id="criteriaContainer">
                     </div>
                 <button type="button" id="addCriteriaButton">➕ 채점 기준 추가 (최대 5개)</button>
@@ -194,6 +239,22 @@
 
         <div id="transcript-report" class="card">
             <h2>📜 대본 및 구간 분석</h2>
+            
+            <div id="score-visualization-area">
+                <div id="overall-score-display" style="cursor: pointer; font-size: 1.5em; font-weight: bold; margin: 20px 0; text-align: center;"></div>
+                <div id="donut-chart-container" style="display: flex; justify-content: center; align-items: center; min-height: 300px; position: relative;">
+                    <svg id="donutChart" width="300" height="300" style="display: none;"></svg>
+                    <div id="donut-overlay-text"></div>
+                </div>
+                
+                <div id="detail-display-container" style="display: none; text-align: left; padding: 20px; border-radius: 8px;">
+                    <button id="backButton" type="button" style="background-color: #555; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; margin-bottom: 15px;">
+                        ← 도넛 차트로 돌아가기
+                    </button>
+                    <div id="detail-content" style="white-space: pre-wrap; color: black;"></div>
+                </div>
+            </div>
+
             <div id="ai-report-placeholder"></div>
             <div id="transcript-content"></div>
         </div>
@@ -216,6 +277,11 @@
         const transcriptContent = document.getElementById('transcript-content');
         const playbackUiDiv = document.getElementById('playback-ui');
         const video = document.getElementById('video');
+        const competitionNameInput = document.getElementById('competitionName');
+        const teamNameInput = document.getElementById('teamName');
+        const criteriaContainer = document.getElementById('criteriaContainer'); 
+        const addCriteriaButton = document.getElementById('addCriteriaButton');
+        const criteriaJsonInput = document.getElementById('criteriaJson');
         const timeEl = document.getElementById('time');
         const exprEl = document.getElementById('expr');
         const exprDetailEl = document.getElementById('exprDetail');
@@ -226,10 +292,15 @@
         const topTable = document.getElementById('topTable');
         const popover = document.getElementById('segment-popover');
         const popoverContent = document.getElementById('popover-content');
-        // ⭐️ 채점 기준 관련 DOM 요소
-        const criteriaContainer = document.getElementById('criteriaContainer');
-        const addCriteriaButton = document.getElementById('addCriteriaButton');
-        const criteriaJsonInput = document.getElementById('criteriaJson');
+        
+        // ⭐️ 도넛 차트 관련 DOM 요소
+        const scoreVisualizationArea = document.getElementById('score-visualization-area');
+        const donutChart = document.getElementById('donutChart');
+        const donutOverlayText = document.getElementById('donut-overlay-text');
+        const overallScoreDisplay = document.getElementById('overall-score-display');
+        const detailDisplayContainer = document.getElementById('detail-display-container');
+        const detailContent = document.getElementById('detail-content');
+        const backButton = document.getElementById('backButton');
 
 
         const bars = {
@@ -256,116 +327,125 @@
         let videoObjectUrl = null;
         let pollingInterval = null;
 
-        // ⭐️ [신규] 기본 채점 기준 초기화 및 관리 로직
-        const MAX_CRITERIA = 5;
-        let criteriaCount = 0;
-
-        function addCriteriaRow(name = '', description = '', score = 10, isInitial = false) {
-            if (criteriaCount >= MAX_CRITERIA) {
-                if (!isInitial) {
-                    alert(`채점 기준은 최대 ${MAX_CRITERIA}개까지만 추가할 수 있습니다.`);
-                }
-                return;
-            }
-
-            const wrapper = document.createElement('div');
-            wrapper.className = 'criteria-row';
-            wrapper.dataset.index = criteriaCount;
-
-            wrapper.innerHTML = `
-                <input type="text" name="criteria-name" placeholder="기준명 (예: 창의력)" value="${name}" required>
-                <input type="text" name="criteria-desc" placeholder="기준 설명 (GPT가 채점할 때 참고)" value="${description}" required>
-                <input type="number" name="criteria-score" placeholder="만점 기준" value="${score}" min="1" max="100" required>
-                ${isInitial ? '' : '<button type="button" class="remove-criteria-btn">삭제</button>'}
-            `;
-
-            criteriaContainer.appendChild(wrapper);
-            criteriaCount++;
-            updateCriteriaButtonState();
+        // ⭐️ [핵심] DOMContentLoaded 이후에 초기화 및 이벤트 리스너 설정
+        document.addEventListener('DOMContentLoaded', () => {
             
-            // 삭제 버튼 이벤트 리스너 추가
-            if (!isInitial) {
-                wrapper.querySelector('.remove-criteria-btn').addEventListener('click', (e) => {
-                    criteriaContainer.removeChild(wrapper);
-                    criteriaCount--;
-                    updateCriteriaButtonState();
-                    e.stopPropagation(); 
-                });
-            }
-        }
-        
-        function updateCriteriaButtonState() {
-            addCriteriaButton.disabled = criteriaCount >= MAX_CRITERIA;
-            addCriteriaButton.textContent = criteriaCount >= MAX_CRITERIA ? `최대 ${MAX_CRITERIA}개 설정됨` : '➕ 채점 기준 추가 (최대 5개)';
-        }
+            // ⭐️ [신규] 기본 채점 기준 초기화 및 관리 로직
+            const MAX_CRITERIA = 5;
+            let criteriaCount = 0; 
 
-        // 기본 기준 설정
-        addCriteriaRow('시선 처리', 'gaze_h/v가 -0.1~0.1 사이인 정면 응시 비율을 평가', 25, true);
-        addCriteriaRow('표정 관리', 'smile, frown 수치를 보고 긍정적/부정적 표정을 평가', 25, true);
-        addCriteriaRow('전달력 및 속도', 'jitter/shimmer, speech_rate_cps를 기준으로 목소리 안정성 및 속도를 평가', 50, true);
-
-        addCriteriaButton.addEventListener('click', () => addCriteriaRow());
-        
-        // ⭐️ [신규] 폼 제출 시 기준 데이터를 JSON으로 변환하여 숨겨진 필드에 저장
-        function collectCriteriaData() {
-            const criteria = [];
-            const rows = criteriaContainer.querySelectorAll('.criteria-row');
-            rows.forEach(row => {
-                const name = row.querySelector('input[name="criteria-name"]').value.trim();
-                const desc = row.querySelector('input[name="criteria-desc"]').value.trim();
-                let score = parseInt(row.querySelector('input[name="criteria-score"]').value);
-                
-                if (name && desc && !isNaN(score) && score > 0) {
-                    // 점수 범위 제한
-                    score = Math.min(100, Math.max(1, score));
-                    criteria.push({ name: name, description: desc, score: score });
+            function addCriteriaRow(name = '', description = '', score = 10, isInitial = false) {
+                if (criteriaCount >= MAX_CRITERIA) {
+                    if (!isInitial) {
+                        alert(`채점 기준은 최대 ${MAX_CRITERIA}개까지만 추가할 수 있습니다.`);
+                    }
+                    return;
                 }
+
+                const wrapper = document.createElement('div');
+                wrapper.className = 'criteria-row';
+                wrapper.dataset.index = criteriaCount;
+
+                wrapper.innerHTML = `
+                    <input type="text" name="criteria-name" placeholder="기준명 (예: 창의력)" value="${name}" required>
+                    <input type="text" name="criteria-desc" placeholder="기준 설명 (GPT가 채점할 때 참고)" value="${description}" required>
+                    <input type="number" name="criteria-score" placeholder="만점 기준" value="${score}" min="1" max="100" required>
+                    ${isInitial ? '' : '<button type="button" class="remove-criteria-btn">삭제</button>'}
+                `;
+
+                criteriaContainer.appendChild(wrapper);
+                criteriaCount++;
+                updateCriteriaButtonState();
+                
+                // 삭제 버튼 이벤트 리스너 추가
+                if (!isInitial) {
+                    wrapper.querySelector('.remove-criteria-btn').addEventListener('click', (e) => {
+                        criteriaContainer.removeChild(wrapper);
+                        criteriaCount--;
+                        updateCriteriaButtonState();
+                        e.stopPropagation(); 
+                    });
+                }
+            }
+            
+            function updateCriteriaButtonState() {
+                addCriteriaButton.disabled = criteriaCount >= MAX_CRITERIA;
+                addCriteriaButton.textContent = criteriaCount >= MAX_CRITERIA ? `최대 ${MAX_CRITERIA}개 설정됨` : '➕ 채점 기준 추가 (최대 5개)';
+            }
+
+            // ⭐️ [수정] 초기 기준 설정: 페이지 로드 시 1개만 표시
+            addCriteriaRow('시선 처리', 'gaze_h/v가 -0.1~0.1 사이인 정면 응시 비율을 평가', 25, true);
+            
+            // ⭐️ 버튼 이벤트 리스너 연결: 버튼 클릭 시 새로운 빈 항목 추가
+            addCriteriaButton.addEventListener('click', () => {
+                // 버튼 클릭 시 미리 채워진 데이터 없이 빈 항목 추가
+                addCriteriaRow('', '', 10, false); 
             });
             
-            // 기준이 하나도 없을 경우 빈 문자열을 저장 (백엔드에서 기본 기준 사용)
-            criteriaJsonInput.value = criteria.length > 0 ? JSON.stringify(criteria) : "";
-        }
-
-
-        // フォーム送信イベント
-        uploadForm.addEventListener('submit', async function(event) {
-            event.preventDefault();
-            
-            // ⭐️ 1. 기준 데이터 수집 및 JSON 필드 업데이트
-            collectCriteriaData();
-
-            const file = videoFile.files[0];
-            if (!file) { alert('동영상 파일을 선택해주세요.'); return; }
-            
-            const formData = new FormData();
-            formData.append('videoFile', file);
-            // ⭐️ 2. JSON 문자열도 FormData에 추가하여 전송
-            formData.append('criteriaJson', criteriaJsonInput.value); 
-            
-            setLoadingState(true, '0/6: 서버에 작업 요청 중...'); 
-            try {
-                const response = await fetch('/upload', {
-                    method: 'POST',
-                    body: formData,
+            // ⭐️ [신규] 폼 제출 시 기준 데이터를 JSON으로 변환하여 숨겨진 필드에 저장
+            function collectCriteriaData() {
+                const criteria = [];
+                const rows = criteriaContainer.querySelectorAll('.criteria-row');
+                rows.forEach(row => {
+                    const name = row.querySelector('input[name="criteria-name"]').value.trim();
+                    const desc = row.querySelector('input[name="criteria-desc"]').value.trim();
+                    let score = parseInt(row.querySelector('input[name="criteria-score"]').value);
+                    
+                    if (name && desc && !isNaN(score) && score > 0) {
+                        score = Math.min(100, Math.max(1, score));
+                        criteria.push({ name: name, description: desc, score: score });
+                    }
                 });
                 
-                if (!response.ok) {
-                    const errorText = await response.text();
-                    try { const errorJson = JSON.parse(errorText); throw new Error(errorJson.detail || '서버 업로드 실패'); } 
-                    catch (e) { throw new Error(errorText || '서버 업로드 실패'); }
-                }
-
-                const data = await response.json();
-                if (!data.job_id) {
-                    throw new Error('서버에서 작업 ID를 받지 못했습니다.');
-                }
-                pollStatus(data.job_id, file);
-
-            } catch (error) {
-                console.error('업로드 중 오류 발생:', error);
-                showError(`❌ 업로드 실패: ${error.message}`);
+                criteriaJsonInput.value = criteria.length > 0 ? JSON.stringify(criteria) : "";
             }
-        });
+
+
+            // フォーム送信イベント
+            uploadForm.addEventListener('submit', async function(event) {
+                event.preventDefault();
+                
+                // ⭐️ 1. 기준 데이터 및 필수 입력 값 확인
+                collectCriteriaData();
+                
+                if (!competitionNameInput.value.trim()) { alert('대회/수업명을 입력해주세요.'); return; }
+                if (!teamNameInput.value.trim()) { alert('팀명을 입력해주세요.'); return; }
+                const file = videoFile.files[0];
+                if (!file) { alert('동영상 파일을 선택해주세요.'); return; }
+                
+                const formData = new FormData();
+                formData.append('videoFile', file);
+                // ⭐️ 2. 대회명, 팀명, JSON 기준을 FormData에 추가
+                formData.append('competitionName', competitionNameInput.value.trim());
+                formData.append('teamName', teamNameInput.value.trim());
+                formData.append('criteriaJson', criteriaJsonInput.value); 
+                
+                setLoadingState(true, '0/6: 서버에 작업 요청 중...'); 
+                try {
+                    const response = await fetch('/upload', {
+                        method: 'POST',
+                        body: formData,
+                    });
+                    
+                    if (!response.ok) {
+                        const errorText = await response.text();
+                        try { const errorJson = JSON.parse(errorText); throw new Error(errorJson.detail || '서버 업로드 실패'); } 
+                        catch (e) { throw new Error(errorText || '서버 업로드 실패'); }
+                    }
+
+                    const data = await response.json();
+                    if (!data.job_id) {
+                        throw new Error('서버에서 작업 ID를 받지 못했습니다.');
+                    }
+                    pollStatus(data.job_id, file);
+
+                } catch (error) {
+                    console.error('업로드 중 오류 발생:', error);
+                    showError(`❌ 업로드 실패: ${error.message}`);
+                }
+            });
+        }); // DOMContentLoaded 끝
+
 
         // Polling 함수 (기존 코드와 동일)
         function pollStatus(jobId, file) {
@@ -402,26 +482,39 @@
             }, 2000);
         }
 
-        // 결과 표시 함수 (기존 코드와 동일)
+        // ⭐️ [핵심] 결과 표시 함수 - 도넛 차트 로직 포함
         function showResults(data, file) {
-            // 1. AI 메시지 표시 (marked.js 사용)
+            // 1. AI 메시지 표시 및 데이터 추출
             if (data.ai_assessment && (data.ai_assessment.ai_feedback || data.ai_assessment.error)) {
                 const message = data.ai_assessment.ai_feedback || `<p class="error">${data.ai_assessment.error}</p>`;
+                
+                // AI 보고서 텍스트 파싱
+                const criteriaData = parseCriteriaFeedback(data.ai_assessment.ai_feedback);
+                const currentTotalScore = criteriaData.reduce((sum, item) => sum + item.score, 0);
+                const totalPossibleScore = criteriaData.reduce((sum, item) => sum + item.max_score, 0);
+                const overallFeedbackText = parseOverallFeedback(data.ai_assessment.ai_feedback);
+                
+                // 3. 도넛 차트 그리기 시작
+                drawDonutChart(criteriaData, currentTotalScore, totalPossibleScore, overallFeedbackText);
+                
+                // AI 보고서 텍스트는 도넛 차트가 보일 때 숨기기 위해 여기서만 파싱하고, 표시 여부는 차트 함수가 결정
                 aiReportPlaceholder.innerHTML = marked.parse(message);
-                if(data.ai_assessment.error) aiReportPlaceholder.classList.add("error");
-                else aiReportPlaceholder.classList.remove("error");
+                aiReportPlaceholder.style.display = 'none'; // 시작 시 도넛 차트를 보여주기 위해 텍스트 숨김
+                
             } else {
                 aiReportPlaceholder.innerHTML = `<p class="error">❌ AI 분석 결과가 비어있습니다.</p>`;
+                aiReportPlaceholder.style.display = 'block';
             }
             
-            // 2. 프레임별 시선/표정 데이터 저장
+
+            // 2. 프레임별 시선/표정 데이터 저장 (기존 로직 유지)
             if (data.raw_data && data.raw_data.length > 0) {
                 rawData = data.raw_data.filter(d => !d.error);
             } else {
                 aiReportPlaceholder.innerHTML += `<p class="error">❌ 원본 데이터(raw_data)를 받지 못했습니다.</p>`;
             }
             
-            // 3. 대본(Transcript) UI 생성
+            // 3. 대본(Transcript) UI 생성 (기존 로직 유지)
             transcriptContent.innerHTML = ''; 
             if (data.aligned_transcript_data && data.aligned_transcript_data.length > 0) {
                 alignedTranscriptData = data.aligned_transcript_data;
@@ -459,44 +552,316 @@
             aiReportDiv.style.display = 'block';
             playbackUiDiv.style.display = 'block';
         }
-        
-        function showError(message) {
-            setLoadingState(false, '');
-            aiReportDiv.style.display = 'block';
-            aiReportPlaceholder.innerHTML = `<p class="error">${message}</p>`; 
-            transcriptContent.innerHTML = '';
-        }
 
-        // ⭐️ [수정] 비디오 재생 시간 업데이트 이벤트 (운율 표시 로직 추가)
-        video.addEventListener('timeupdate', () => {
-            const currentTime = video.currentTime;
-            timeEl.textContent = currentTime.toFixed(2) + 's';
+        // ⭐️ [신규] GPT 응답에서 항목별 점수와 피드백을 파싱하는 함수
+        function parseCriteriaFeedback(rawText) {
+            const result = [];
+            
+            const criteriaRegex = /\d+\. \*\*(.*?)\*\* \((\d+)점\):([\s\S]*?)(?=\n\s*\d+\. \*\*|\n\n\d+\. \*\*종합 점수)/g;
+            criteriaRegex.lastIndex = 0; 
 
-            // 1. 프레임별 데이터 UI 업데이트 (시선/표정)
-            const frame = findClosestFrame(currentTime);
-            if (!frame) {
-                Object.keys(bars).filter(k => !k.startsWith('jitter') && !k.startsWith('shimmer')).forEach(key => setGauge(key, 0));
-                Object.keys(bars).filter(k => k.startsWith('gaze')).forEach(key => setGaugeSigned(key, 0));
-                exprEl.textContent = '—'; gazeEl.textContent = '—'; gazeDetailEl.textContent = '';
-                topTable.innerHTML = '';
-            } else {
-                updateAllGauges(frame); 
-                updateLabels(frame);    
-                if (toggleTop.checked) {
-                    updateTop10(frame.all_blendshapes);
+            let match;
+            while ((match = criteriaRegex.exec(rawText)) !== null) {
+                const [section, name, maxScoreStr, feedbackContent] = match;
+                
+                const scoreMatch = section.match(/점수: (\d+)점 \(\d+점 만점 중\)/);
+                
+                if (scoreMatch) {
+                    const score = parseInt(scoreMatch[1]);
+                    const maxScore = parseInt(maxScoreStr); 
+                    const feedback = feedbackContent.substring(0, feedbackContent.indexOf('점수:')).trim();
+                    
+                    result.push({
+                        name: name.trim(),
+                        score: score,
+                        max_score: maxScore,
+                        feedback: feedback
+                    });
                 }
             }
+            // ⚠️ 파싱이 실패할 경우, 디버깅을 위해 임시 Mock Data를 반환합니다.
+            if (result.length === 0) {
+                 return [
+                    { name: '시선 처리', score: 10, max_score: 25, feedback: "GPT 응답 파싱 실패: 임시 데이터입니다. 실제 응답에 점수 형식이 누락되었습니다." },
+                    { name: '표정 관리', score: 15, max_score: 25, feedback: "GPT 응답 파싱 실패: 임시 데이터입니다. 실제 응답에 점수 형식이 누락되었습니다." },
+                    { name: '전달력', score: 30, max_score: 50, feedback: "GPT 응답 파싱 실패: 임시 데이터입니다. 실제 응답에 점수 형식이 누락되었습니다." },
+                ];
+            }
+            return result;
+        }
+
+        // ⭐️ [신규] GPT 응답에서 종합 점수 및 총평을 추출하는 함수
+        function parseOverallFeedback(rawText) {
+            const overallMatch = rawText.match(/\*\*종합 점수 및 총평\*\*:([\s\S]*?)(?=\n\s*\d+\. \*\*영상요약)/s);
+            return overallMatch ? overallMatch[1].trim() : "종합 피드백 텍스트를 파싱하는 데 실패했습니다.";
+        }
+
+        // ⭐️ [신규] SVG 도넛 차트 그리기 함수
+        function drawDonutChart(criteriaData, currentTotalScore, totalPossibleScore, overallFeedbackText) {
+            donutChart.style.display = 'block';
+            detailDisplayContainer.style.display = 'none';
+            donutChart.innerHTML = '';
+            donutOverlayText.innerHTML = '';
             
-            // 2. ⭐️ [수정] 대본 하이라이트 및 *구간별* 운율(Prosody) UI 업데이트
-            updateTranscriptAndProsodyHighlight(currentTime);
-        });
+            let accumulatedAngle = 0;
+            const radius = 100;
+            const centerX = 150;
+            const centerY = 150;
+            const innerRadius = 60;
+            const colors = ['#3b82f6', '#f59e0b', '#10b981', '#ef4444', '#8b5cf6'];
+            
+            // 1. 총점 표시 업데이트 (차트 위에 표시)
+            overallScoreDisplay.innerHTML = `총점: <span style="font-size: 1.2em; color: #2ecc71;">${currentTotalScore}/${totalPossibleScore}</span>`;
+            
+            // 2. 차트 데이터 계산 및 그리기
+            criteriaData.forEach((data, index) => {
+                // 만점 비중에 따라 전체 영역을 나눕니다.
+                const proportion = data.max_score / totalPossibleScore; 
+                const angle = 360 * proportion;
+                const nextAngle = accumulatedAngle + angle;
+                
+                // 획득 점수 비율 (만점 대비 실제로 획득한 점수의 비율)
+                const scoreRatio = data.score / data.max_score; 
+                
+                // Path 계산
+                const startAngleRad = Math.PI * 2 * accumulatedAngle / 360;
+                const endAngleRad = Math.PI * 2 * nextAngle / 360;
+
+                const startX = centerX + radius * Math.sin(startAngleRad);
+                const startY = centerY - radius * Math.cos(startAngleRad);
+                const endX = centerX + radius * Math.sin(endAngleRad);
+                const endY = centerY - radius * Math.cos(endAngleRad);
+                
+                const largeArcFlag = angle > 180 ? 1 : 0;
+                
+                // ⭐️ 항목의 전체 만점 영역 (옅은 색)
+                const totalPathData = [
+                    `M ${centerX} ${centerY}`,
+                    `L ${startX} ${startY}`,
+                    `A ${radius} ${radius} 0 ${largeArcFlag} 1 ${endX} ${endY}`,
+                    `Z`
+                ].join(' ');
+                
+                const totalPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+                totalPath.setAttribute('d', totalPathData);
+                totalPath.setAttribute('fill', '#ddd'); // 옅은 회색으로 만점 영역 표시
+                totalPath.style.cursor = 'pointer';
+                donutChart.appendChild(totalPath);
+                
+                // ⭐️ 획득 점수 영역 (진한 색, 만점 영역 위에 덧그림)
+                if (scoreRatio > 0) {
+                    const scoreAngle = angle * Math.min(scoreRatio, 1); // 100%까지만 채우기
+                    const scoreNextAngleRad = Math.PI * 2 * (accumulatedAngle + scoreAngle) / 360;
+                    
+                    const scoreEndX = centerX + radius * Math.sin(scoreNextAngleRad);
+                    const scoreEndY = centerY - radius * Math.cos(scoreNextAngleRad);
+                    
+                    const scoreLargeArcFlag = scoreAngle > 180 ? 1 : 0;
+
+                    const scorePathData = [
+                        `M ${centerX} ${centerY}`,
+                        `L ${startX} ${startY}`,
+                        `A ${radius} ${radius} 0 ${scoreLargeArcFlag} 1 ${scoreEndX} ${scoreEndY}`,
+                        `Z`
+                    ].join(' ');
+                    
+                    const scorePath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+                    scorePath.setAttribute('d', scorePathData);
+                    scorePath.setAttribute('fill', colors[index % colors.length]);
+                    scorePath.style.cursor = 'pointer';
+                    
+                    // ⭐️ 항목별 클릭 이벤트 추가
+                    scorePath.addEventListener('click', () => showDetail('criteria', data));
+                    
+                    donutChart.appendChild(scorePath);
+                }
+                
+                // ⭐️ 텍스트 레이블 (항목 이름 및 획득 점수)
+                const textAngle = accumulatedAngle + angle / 2;
+                const textDistance = radius * 1.15; 
+                const textX = centerX + textDistance * Math.sin(Math.PI * 2 * textAngle / 360);
+                const textY = centerY - textDistance * Math.cos(Math.PI * 2 * textAngle / 360);
+                
+                const textElement = document.createElementNS("http://www.w3.org/2000/svg", "text");
+                textElement.setAttribute('x', textX);
+                textElement.setAttribute('y', textY); 
+                textElement.setAttribute('fill', 'black');
+                textElement.setAttribute('text-anchor', 'middle');
+                textElement.setAttribute('font-size', '12');
+                
+                // 텍스트 내용: 항목명 + 점수
+                textElement.innerHTML = `<tspan x="${textX}" dy="0" font-weight="bold">${data.name}</tspan>` + 
+                                        `<tspan x="${textX}" dy="15">${data.score} / ${data.max_score}</tspan>`;
+                
+                donutChart.appendChild(textElement);
+
+                accumulatedAngle = nextAngle;
+            });
+            
+            // 가운데 흰색 원 (도넛 효과)
+            const centerCircle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+            centerCircle.setAttribute('cx', centerX);
+            centerCircle.setAttribute('cy', centerY);
+            centerCircle.setAttribute('r', innerRadius);
+            centerCircle.setAttribute('fill', 'white');
+            donutChart.appendChild(centerCircle);
+            
+            // ⭐️ 총점 오버레이 텍스트 추가
+            donutOverlayText.innerHTML = `<span style="font-size: 0.9em; color: black; line-height: 1.2;">총점</span><br><span style="font-size: 1.5em; color: #333;">${currentTotalScore}</span>`;
+            donutOverlayText.style.cursor = 'pointer';
+            
+            // ⭐️ 총점 클릭 이벤트 연결 (클릭 시 종합 총평 표시)
+            donutOverlayText.onclick = () => showDetail('overall', { score: currentTotalScore, max_score: totalPossibleScore, feedback: overallFeedbackText });
+            
+            // ⭐️ 항목별 제목 옆에 '도넛 보기' 버튼 생성 (AI 보고서 영역 파싱)
+            document.querySelectorAll('#ai-report-placeholder h3, #ai-report-placeholder h2').forEach(heading => {
+                const text = heading.textContent;
+                // '1. 시선 처리 (25점):' 패턴을 찾습니다.
+                if (text.match(/\d+\. .*? \(\d+점\):/)) {
+                    const button = document.createElement('button');
+                    button.textContent = '도넛 보기';
+                    button.style.cssText = 'margin-left: 10px; padding: 4px 8px; font-size: 0.8em; background-color: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer;';
+                    button.onclick = () => {
+                        scoreVisualizationArea.style.display = 'block';
+                        detailDisplayContainer.style.display = 'none';
+                        aiReportPlaceholder.style.display = 'none';
+                    };
+                    
+                    heading.appendChild(button);
+                }
+            });
+            // 초기 로드 시 GPT 보고서는 보이지만 차트 영역은 숨겨집니다.
+            scoreVisualizationArea.style.display = 'block';
+            aiReportPlaceholder.style.display = 'none';
+        }
+
+        // ⭐️ [신규] 상세 정보 표시 함수
+        function showDetail(type, data) {
+            scoreVisualizationArea.style.display = 'none';
+            detailDisplayContainer.style.display = 'block';
+            aiReportPlaceholder.style.display = 'none'; 
+            
+            detailDisplayContainer.style.backgroundColor = 'white';
+            
+            if (type === 'overall') {
+                detailContent.innerHTML = `
+                    <h3 style="color: black;">종합 점수 및 총평</h3>
+                    <p style="margin-bottom: 20px; color: black;">
+                        총점: <b>${data.score}/${data.max_score}</b>점
+                    </p>
+                    <div style="color: black;">${marked.parse(data.feedback)}</div>
+                `;
+            } else if (type === 'criteria') {
+                detailContent.innerHTML = `
+                    <h3 style="color: black;">${data.name} 채점 결과 (${data.score}/${data.max_score})</h3>
+                    <div style="color: black;">${marked.parse(data.feedback)}</div>
+                    <div style="color: #666; margin-top: 15px;">* 이 상세 내용은 GPT가 파싱한 항목별 피드백입니다.</div>
+                `;
+            }
+        }
         
-        // ⭐️ [수정] 대본 하이라이트 + 운율 게이지 업데이트 함수
-        let lastActiveSegment = null;
+        // ⭐️ [신규] 뒤로가기 버튼 이벤트
+        backButton.addEventListener('click', () => {
+            scoreVisualizationArea.style.display = 'block';
+            detailDisplayContainer.style.display = 'none';
+            // GPT 보고서 텍스트 영역을 다시 보이게 합니다.
+            aiReportPlaceholder.style.display = 'none';
+        });
+
+        // Polling 함수 (기존 코드 유지)
+        function pollStatus(jobId, file) {
+            if (pollingInterval) clearInterval(pollingInterval);
+            pollingInterval = setInterval(async () => {
+                try {
+                    const response = await fetch(`/status/${jobId}`);
+
+                    if (!response.ok) {
+                        const errorText = await response.text();
+                        try { const errorJson = JSON.parse(errorText); throw new Error(errorJson.detail || `상태 조회 실패: ${response.statusText}`); } 
+                        catch (e) { throw new Error(errorText || `상태 조회 실패: ${response.statusText}`); }
+                    }
+
+                    const data = await response.json();
+
+                    let progressMessage = `🤖 ${data.message}`;
+                    if (data.progress && data.total) {
+                        progressMessage += ` (${data.progress}/${data.total} 프레임)`;
+                    }
+                    loadingText.textContent = progressMessage;
+
+                    if (data.status === 'Complete' || data.status === 'Error') {
+                        clearInterval(pollingInterval);
+                        pollingInterval = null;
+                        showResults(data.result, file);
+                    }
+                } catch (error) {
+                    clearInterval(pollingInterval);
+                    pollingInterval = null;
+                    console.error('Polling 중 오류 발생:', error);
+                    showError(`❌ 분석 중 오류 발생: ${error.message}`);
+                }
+            }, 2000);
+        }
+
+        // 헬퍼 함수: 나머지 로직 (기존 로직 유지)
+        
+        function updateAllGauges(frame) {
+            document.getElementById('n_smile').textContent = frame.smile.toFixed(3);
+            document.getElementById('b_smile').style.width = (Math.max(0, Math.min(1, frame.smile)) * 100).toFixed(0) + '%';
+            
+            setGauge('smile', frame.smile);
+            setGauge('frown', frame.frown);
+            setGauge('brow_up', frame.brow_up);
+            setGauge('brow_down', frame.brow_down);
+            setGauge('jaw_open', frame.jaw_open);
+            setGauge('mouth_open', frame.mouth_open);
+            setGauge('squint', frame.squint);
+            setGaugeSigned('gaze_h', frame.gaze_h);
+            setGaugeSigned('gaze_v', frame.gaze_v);
+        }
+
+        function updateTop10(blendshapes) {
+            const topTable = document.getElementById('topTable');
+            if (!blendshapes) {
+                topTable.innerHTML = '';
+                return;
+            }
+            const entries = Object.keys(blendshapes).map(key => ({ name: key, score: blendshapes[key] }));
+            entries.sort((a, b) => b.score - a.score);
+            const top10 = entries.slice(0, 10);
+            topTable.innerHTML = top10.map(item => 
+                `<tr><td>${item.name}</td><td class="r">${item.score.toFixed(3)}</td></tr>`
+            ).join('');
+        }
+
+        function setLoadingState(isLoading, message) {
+            submitButton.disabled = isLoading;
+            submitButton.textContent = isLoading ? '분석 중...' : 'AI 분석 시작';
+            document.getElementById('loading').style.display = isLoading ? 'block' : 'none';
+            document.getElementById('loading-text').textContent = message;
+            
+            if (isLoading) {
+                document.getElementById('transcript-report').style.display = 'none';
+                document.getElementById('playback-ui').style.display = 'none';
+                document.getElementById('ai-report-placeholder').innerHTML = '';
+                document.getElementById('transcript-content').innerHTML = '';
+                rawData = [];
+                alignedTranscriptData = [];
+                if (pollingInterval) clearInterval(pollingInterval);
+            }
+        }
+
+        function findClosestFrame(currentTime) {
+            if (rawData.length === 0) return null;
+            return rawData.reduce((prev, curr) => {
+                return (Math.abs(curr.time - currentTime) < Math.abs(prev.time - currentTime) ? curr : prev);
+            });
+        }
+        
         function updateTranscriptAndProsodyHighlight(currentTime) {
             if (alignedTranscriptData.length === 0) return;
 
-            const segments = transcriptContent.querySelectorAll('.segment');
+            const segments = document.querySelectorAll('.segment');
             let currentActiveSegment = null;
             
             for (const segmentEl of segments) {
@@ -520,15 +885,12 @@
                     
                     const segmentData = alignedTranscriptData[currentActiveSegment.dataset.index];
                     if (segmentData && segmentData.prosody) {
-                        // Jitter는 2.0%를 max로, Shimmer는 5.0%를 max로 설정
                         setGauge('jitter', segmentData.prosody.jitter / 2.0); 
                         setGauge('shimmer', segmentData.prosody.shimmer / 5.0);
-                        // 텍스트는 실제 % 값으로 표시
                         nums['jitter'].textContent = segmentData.prosody.jitter.toFixed(2) + '%';
                         nums['shimmer'].textContent = segmentData.prosody.shimmer.toFixed(2) + '%';
                     }
                 } else {
-                    // 대본 구간이 아닐 때(쉼 구간) 운율 게이지 초기화
                     setGauge('jitter', 0);
                     setGauge('shimmer', 0);
                     nums['jitter'].textContent = '0.00%';
@@ -538,8 +900,9 @@
             }
         }
         
-        // ⭐️ [수정] 팝오버 표시 함수 (운율, 속도 정보 추가)
         function showPopover(event, segment) {
+            const popover = document.getElementById('segment-popover');
+            const popoverContent = document.getElementById('popover-content');
             let visionHtml = '';
             if (segment.vision_avg.error) {
                 visionHtml = `<p class="error" style="margin: 4px 0;">${segment.vision_avg.error}</p>`;
@@ -563,7 +926,6 @@
 
             popover.style.display = 'block';
             
-            // 팝오버 위치 계산 (기존 코드와 동일)
             const popWidth = popover.offsetWidth;
             const popHeight = popover.offsetHeight;
             const margin = 10;
@@ -582,108 +944,6 @@
 
             popover.style.left = left + 'px';
             popover.style.top = top + 'px';
-        }
-
-        // Top-10 토글 버튼 이벤트 (기존 코드와 동일)
-        toggleTop.addEventListener('change', () => {
-            topWrap.style.display = toggleTop.checked ? 'block' : 'none';
-        });
-
-        // ⭐️ [수정] 표정/시선 게이지만 업데이트하는 함수 (운율 제외)
-        function updateAllGauges(frame) {
-            setGauge('smile', frame.smile);
-            setGauge('frown', frame.frown);
-            setGauge('brow_up', frame.brow_up);
-            setGauge('brow_down', frame.brow_down);
-            setGauge('jaw_open', frame.jaw_open);
-            setGauge('mouth_open', frame.mouth_open);
-            setGauge('squint', frame.squint);
-            setGaugeSigned('gaze_h', frame.gaze_h);
-            setGaugeSigned('gaze_v', frame.gaze_v);
-        }
-
-        // Top-10 블렌드셰이프 테이블 그리기 (기존 코드와 동일)
-        function updateTop10(blendshapes) {
-            if (!blendshapes) {
-                topTable.innerHTML = '';
-                return;
-            }
-            const entries = Object.keys(blendshapes).map(key => ({ name: key, score: blendshapes[key] }));
-            entries.sort((a, b) => b.score - a.score);
-            const top10 = entries.slice(0, 10);
-            topTable.innerHTML = top10.map(item => 
-                `<tr><td>${item.name}</td><td class="r">${item.score.toFixed(3)}</td></tr>`
-            ).join('');
-        }
-
-        // 헬퍼 함수: 로딩 상태 설정 (기존 코드와 동일)
-        function setLoadingState(isLoading, message) {
-            submitButton.disabled = isLoading;
-            submitButton.textContent = isLoading ? '분석 중...' : 'AI 분석 시작';
-            loadingDiv.style.display = isLoading ? 'block' : 'none';
-            loadingText.textContent = message;
-            
-            if (isLoading) {
-                aiReportDiv.style.display = 'none';
-                playbackUiDiv.style.display = 'none';
-                aiReportPlaceholder.innerHTML = '';
-                transcriptContent.innerHTML = '';
-                rawData = [];
-                alignedTranscriptData = [];
-                if (pollingInterval) clearInterval(pollingInterval);
-            }
-        }
-
-        // 헬퍼 함수: 현재 시간에 가장 가까운 프레임 데이터 찾기 (기존 코드와 동일)
-        function findClosestFrame(currentTime) {
-            if (rawData.length === 0) return null;
-            return rawData.reduce((prev, curr) => {
-                return (Math.abs(curr.time - currentTime) < Math.abs(prev.time - currentTime) ? curr : prev);
-            });
-        }
-        
-        // 헬퍼 함수: 레이블 업데이트 (기존 코드와 동일)
-        function updateLabels(frame) {
-            const TH = { smile: 0.25, frown: 0.25, brow_down: 0.2, brow_up: 0.3, squint: 0.3 };
-            let exprLabel = '😐 중립';
-            if (frame.smile > TH.smile && frame.brow_up > 0.15) {
-                exprLabel = '😊 미소';
-            } else if (frame.frown > TH.frown && frame.brow_down > TH.brow_down) {
-                exprLabel = '😠 찡그림';
-            } else if (frame.squint > TH.squint) {
-                exprLabel = '😑 눈 찌푸림';
-            }
-            exprEl.textContent = exprLabel;
-
-            const GH = 0.12, GV = 0.12;
-            let gazeLabel = '정면';
-            if (Math.abs(frame.gaze_h) < GH && Math.abs(frame.gaze_v) < GV) {
-                gazeLabel = '정면';
-            } else {
-                const horiz = frame.gaze_h > GH ? '좌' : (frame.gaze_h < -GH ? '우' : '');
-                const vert = frame.gaze_v > GV ? '상' : (frame.gaze_v < -GV ? '하' : '');
-                gazeLabel = (vert + horiz) || (horiz || vert);
-            }
-            gazeEl.textContent = gazeLabel;
-            gazeDetailEl.textContent = `h=${frame.gaze_h.toFixed(2)}, v=${frame.gaze_v.toFixed(2)}`;
-        }
-
-        // 헬퍼 함수: 게이지 UI 설정 (기존 코드와 동일)
-        function setGauge(key, v) {
-            if (!nums[key] || !bars[key]) return;
-            const value = v || 0;
-            if (key !== 'jitter' && key !== 'shimmer') {
-                nums[key].textContent = value.toFixed(3);
-            }
-            bars[key].style.width = (Math.max(0, Math.min(1, value)) * 100).toFixed(0) + '%';
-        }
-
-        // 헬퍼 함수: -1 ~ 1 범위의 게이지 UI 설정 (시선용)
-        function setGaugeSigned(key, v) {
-            if (!nums[key] || !bars[key]) return;
-            const value = v || 0;
-            nums[key].textContent = value.toFixed(3);
-            bars[key].style.width = ((value * 0.5 + 0.5) * 100).toFixed(0) + '%';
         }
     </script>
 </body>

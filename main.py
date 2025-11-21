@@ -1,28 +1,32 @@
+import os
+import json
+import uvicorn
+import uuid 
+from pathlib import Path
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, UploadFile, File, HTTPException, status, BackgroundTasks, Form 
 from fastapi.responses import JSONResponse, FileResponse
-import uvicorn
-from contextlib import asynccontextmanager
-from pathlib import Path
-import uuid 
-import os 
-import json
 from fastapi.middleware.cors import CORSMiddleware 
 
 # 유틸리티 및 모델 로더 임포트
-from utils.helpers import setup_temp_dirs, create_session_dirs, save_upload_file
+# ⭐️ [수정] helpers 재구성 (기존 helpers에 있는 파일/폴더 관리 함수 유지)
+from utils.helpers import setup_temp_dirs, create_session_dirs, save_upload_file, BASE_DIR 
+
+# ⭐️ [신규] json_helpers 임포트 경로 수정 및 JSON 저장 함수 임포트
+# 'processing.json_helpers' 대신 'utils.json_helpers'로 수정
+from utils.json_helpers import setup_json_dirs, save_criteria_json 
+
 from processing.face_analyzer import setup_face_landmarker
 from processing.audio_analyzer import load_local_whisper_model
 from processing.ai_scorer import is_openai_configured 
 
 # [신규] 분리된 태스크 매니저 임포트
 from processing.task_manager import run_analysis_task, job_status
-
 # --- 설정 ---
 BASE_DIR = Path(__file__).resolve().parent
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # ⭐️ [추가] Windows에서 torch/uvicorn reload 충돌 방지
     if os.name == 'nt':
         os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
 
@@ -30,13 +34,12 @@ async def lifespan(app: FastAPI):
     print("서버가 시작되었습니다. (http://127.0.0.1:8000)")
     print("="*50)
     setup_temp_dirs()
+    setup_json_dirs() # ⭐️ JSON 폴더 설정
+    
     try:
-        # AI 1: MediaPipe 얼굴 모델 로드
         setup_face_landmarker()
-        # AI 2: 로컬 Whisper 모델 로드
         load_local_whisper_model()
         
-        # AI 3: OpenAI (키 확인)
         if not is_openai_configured(): 
             print("="*50)
             print("⚠️  경고: OPENAI_API_KEY가 없습니다. (AI 채점 기능은 비활성화됩니다)") 
@@ -67,11 +70,12 @@ async def read_index():
     return FileResponse(html_file_path)
 
 @app.post("/upload", summary="비디오 분석 작업 시작")
-# ⭐️ [수정] criteriaJson을 Form 데이터로 받음
 def upload_and_analyze_video(
     background_tasks: BackgroundTasks, 
     videoFile: UploadFile = File(...),
-    criteriaJson: str = Form("[]") # 폼에서 JSON 문자열을 받습니다. (기본값 빈 배열)
+    competitionName: str = Form(...), # 대회/수업명
+    teamName: str = Form(...),         # 팀명
+    criteriaJson: str = Form("[]")
 ):
     
     video_dir, frame_dir = create_session_dirs()
@@ -79,18 +83,21 @@ def upload_and_analyze_video(
     video_path = Path(os.path.join(video_dir, safe_filename))
     
     try:
-        # ⭐️ 1. JSON 문자열 파싱 (빈 문자열이 넘어올 경우 빈 리스트로 처리)
         custom_criteria = json.loads(criteriaJson if criteriaJson else "[]")
 
-        # 2. 파일 저장
+        # ⭐️ [신규] JSON 파일 저장 로직 실행
+        if custom_criteria:
+            # save_criteria_json 함수는 이제 폴더 경로 대신 competitionName만 받습니다.
+            save_criteria_json(custom_criteria, competitionName) 
+
         print(f"\n[작업 접수] 파일: {videoFile.filename}")
+        print(f"   > 대회/수업명: {competitionName}, 팀명: {teamName}")
         print(f"   > 채점 기준 항목 수: {len(custom_criteria) if custom_criteria else '기본 기준 사용'}")
         save_upload_file(videoFile, video_path)
         
         job_id = str(uuid.uuid4())
         job_status[job_id] = {"status": "Pending", "message": "0/6: 작업 대기 중..."} 
         
-        # ⭐️ 3. 백그라운드 태스크에 custom_criteria 전달
         background_tasks.add_task(run_analysis_task, job_id, video_path, frame_dir, video_dir, custom_criteria)
         
         print(f"   > Job ID 발급: {job_id}")
@@ -115,7 +122,6 @@ def get_status(job_id: str):
     if not status:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="작업 ID를 찾을 수 없습니다.")
     
-    # 작업 완료/에러 시 메모리에서 제거
     if status["status"] == "Complete" or status["status"] == "Error":
         return job_status.pop(job_id)
         

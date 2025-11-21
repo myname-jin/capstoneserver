@@ -1,3 +1,4 @@
+# [재구성 파일] utils/helpers.py
 import os
 import shutil
 import uuid
@@ -8,11 +9,13 @@ from fastapi import UploadFile
 BASE_DIR = Path(__file__).resolve().parent.parent
 UPLOAD_DIR = BASE_DIR / "uploads"
 FRAME_DIR = BASE_DIR / "frames"
+# ⭐️ JSON 관련 경로는 json_helpers.py로 이동
 
 def setup_temp_dirs():
     """서버 시작 시 임시 폴더들이 있는지 확인하고 없으면 생성합니다."""
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     os.makedirs(FRAME_DIR, exist_ok=True)
+    # ⭐️ [수정] JSON 폴더 생성 로직은 json_helpers.py의 setup_json_dirs로 이동
 
 def create_session_dirs():
     """
@@ -43,6 +46,6 @@ def cleanup_dirs(*dirs: Path):
         if d and os.path.exists(d):
             try:
                 shutil.rmtree(d)
-                print(f"   > 임시 폴더 삭제: {d}")
+                print(f"   > 임시 폴더 삭제: {d}")
             except Exception as e:
-                print(f"   > 임시 폴더 삭제 실패: {d}, 오류: {e}")
+                print(f"   > 임시 폴더 삭제 실패: {d}, 오류: {e}")

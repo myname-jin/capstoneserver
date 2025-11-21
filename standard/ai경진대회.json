@@ -1,0 +1,22 @@
+[
+    {
+        "name": "시선 처리",
+        "description": "gaze_h/v가 -0.1~0.1 사이인 정면 응시 비율을 평가",
+        "score": 25
+    },
+    {
+        "name": "표정 관리",
+        "description": "smile, frown 수치를 보고 긍정적/부정적 표정을 평가",
+        "score": 25
+    },
+    {
+        "name": "전달력 및 속도",
+        "description": "jitter/shimmer, speech_rate_cps를 기준으로 목소리 안정성 및 속도를 평가",
+        "score": 50
+    },
+    {
+        "name": "창의력",
+        "description": "창의적인가?",
+        "score": 10
+    }
+]
