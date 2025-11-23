@@ -73,28 +73,30 @@ async def read_chat():
         raise HTTPException(status_code=404, detail="chat.html 파일을 찾을 수 없습니다.")
     return FileResponse(html_file_path)
 
-@app.post("/upload", summary="비디오 분석 작업 시작")
+@app.post("/analyze")
 def upload_and_analyze_video(
     background_tasks: BackgroundTasks, 
-    videoFile: UploadFile = File(...),
-    competitionName: str = Form(...), # 대회/수업명
-    teamName: str = Form(...),         # 팀명
-    criteriaJson: str = Form("[]")
+    # 1. 안드로이드 Retrofit의 'file' 파트와 이름 일치
+    file: UploadFile = File(...),
+    
+    # 2. 안드로이드 Retrofit의 'criteria' 파트와 이름 일치
+    criteria: str = Form(...),
+    
+    # 3. 안드로이드에서 보내지 않는 값들은 None으로 처리 (에러 방지)
+    competitionName: str = Form(None), 
+    teamName: str = Form(None)
 ):
     video_dir, frame_dir = create_session_dirs()
-    safe_filename = videoFile.filename or "uploaded_video"
+    safe_filename = file.filename or "uploaded_video.mp4"
     video_path = Path(os.path.join(video_dir, safe_filename))
     
     try:
-        custom_criteria = json.loads(criteriaJson if criteriaJson else "[]")
-
-        if custom_criteria:
+        custom_criteria = json.loads(criteria if criteria else "[]")
+        if custom_criteria and competitionName: 
             save_criteria_json(custom_criteria, competitionName)
 
-        print(f"\n[작업 접수] 파일: {videoFile.filename}")
-        print(f"   > 대회/수업명: {competitionName}, 팀명: {teamName}")
+        print(f"\n[작업 접수] 파일: {file.filename}")
         print(f"   > 채점 기준 항목 수: {len(custom_criteria) if custom_criteria else '기본 기준 사용'}")
-        save_upload_file(videoFile, video_path)
         
         job_id = str(uuid.uuid4())
         job_status[job_id] = {"status": "Pending", "message": "0/6: 작업 대기 중..."} 
