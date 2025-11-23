@@ -139,3 +139,4 @@ if __name__ == "__main__":
     )
     # .\venv\Scripts\activate    python main.py  http://127.0.0.1:8000
     # pip install -r requirements.txt (라이브러리 설치)
+    # uvicorn main:app --host 0.0.0.0 --port 8000  //핸드폰으로 테스트할때 서버키는법 (핸드폰-컴퓨터 같은 와이파이여야함)
