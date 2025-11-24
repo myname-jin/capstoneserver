@@ -86,17 +86,23 @@ def upload_and_analyze_video(
     competitionName: str = Form(None), 
     teamName: str = Form(None)
 ):
+    # 1. 임시 폴더 생성
     video_dir, frame_dir = create_session_dirs()
+
+    # 2. 파일 경로 설정
     safe_filename = file.filename or "uploaded_video.mp4"
     video_path = Path(os.path.join(video_dir, safe_filename))
     
     try:
+        # 파일을 실제로 저장
+        save_upload_file(file, video_path)
+
         custom_criteria = json.loads(criteria if criteria else "[]")
         if custom_criteria and competitionName: 
             save_criteria_json(custom_criteria, competitionName)
 
         print(f"\n[작업 접수] 파일: {file.filename}")
-        print(f"   > 채점 기준 항목 수: {len(custom_criteria) if custom_criteria else '기본 기준 사용'}")
+        print(f"   > 저장 경로: {video_path}") # 경로 확인용 로그
         
         job_id = str(uuid.uuid4())
         job_status[job_id] = {"status": "Pending", "message": "0/6: 작업 대기 중..."} 
@@ -149,3 +155,7 @@ if __name__ == "__main__":
     # .\venv\Scripts\activate    python main.py  http://127.0.0.1:8000
     # pip install -r requirements.txt (라이브러리 설치)
     # http://127.0.0.1:8000/chat
+
+    # --------------핸드폰으로 실행 방법-----------------
+    # .\venv\Scripts\activate
+    # uvicorn main:app --host 0.0.0.0 --port 8000 (서버 키기)
